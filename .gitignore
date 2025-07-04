@@ -1,0 +1,5 @@
+node_modules/
+accountA-log.json
+accountB-log.json
+accountC-log.json
+.env

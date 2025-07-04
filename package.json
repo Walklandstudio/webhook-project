@@ -1,0 +1,20 @@
+{
+  "name": "webhook-project",
+  "version": "1.0.0",
+  "description": "Node.js webhook forwarding service for GHL and HubSpot integrations",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["webhook", "nodejs", "express", "GHL", "HubSpot"],
+  "author": "Lisa Lorraine Walker",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.10.0",
+    "dotenv": "^17.0.1",
+    "express": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
