@@ -153,6 +153,58 @@ app.get('/env-test', (req, res) => {
 app.get('/', (req, res) => {
   res.send('✅ Webhook server running.');
 });
+// ── WEBHOOK 4 (GHL to HubSpot) ───────────────────────────────
+app.post('/webhook/ghl-to-hubspot', async (req, res) => {
+  try {
+    const {
+      email,
+      firstName,
+      lastName,
+      phone,
+      source,
+      tags,
+      my_custom_field // add as many custom fields as you want!
+    } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ status: 'error', message: 'Missing required field: email' });
+    }
+
+    const hubspotData = {
+      properties: {
+        email,
+        firstname: firstName || '',
+        lastname: lastName || '',
+        phone: phone || '',
+        source: source || '',
+        tags: tags || '',
+        my_custom_field: my_custom_field || ''
+        // Add more custom properties if needed
+      }
+    };
+
+    const hubspotResponse = await axios.post(
+      'https://api.hubapi.com/crm/v3/objects/contacts',
+      hubspotData,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}`
+        }
+      }
+    );
+
+    console.log('✅ Contact sent to HubSpot:', hubspotResponse.data);
+
+    res.status(200).json({ status: 'success', data: hubspotResponse.data });
+  } catch (error) {
+    console.error('❌ HubSpot Error:', error.response?.data || error.message);
+    res.status(500).json({
+      status: 'error',
+      error: error.response?.data || error.message
+    });
+  }
+});
 
 app.listen(port, () => {
   console.log(`🚀 Webhook server listening on port ${port}`);
