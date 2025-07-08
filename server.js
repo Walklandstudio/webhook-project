@@ -158,12 +158,14 @@ app.post('/webhook/ghl-to-hubspot', async (req, res) => {
   try {
     const {
       email,
-      firstName,
-      lastName,
+      firstname,
+      lastname,
       phone,
       source,
       tags,
-      my_custom_field // add as many custom fields as you want!
+      investor_archetype_ppt_frequency,
+      investor_archetype_ppt_profile,
+      investor_archetype_free_ppt_frequency
     } = req.body;
 
     if (!email) {
@@ -172,14 +174,15 @@ app.post('/webhook/ghl-to-hubspot', async (req, res) => {
 
     const hubspotData = {
       properties: {
-        email,
-        firstname: firstName || '',
-        lastname: lastName || '',
+        email: email || '',
+        firstname: firstname || '',
+        lastname: lastname || '',
         phone: phone || '',
         source: source || '',
         tags: tags || '',
-        my_custom_field: my_custom_field || ''
-        // Add more custom properties if needed
+        investor_archetype_ppt_frequency: investor_archetype_ppt_frequency || '',
+        investor_archetype_ppt_profile: investor_archetype_ppt_profile || '',
+        investor_archetype_free_ppt_frequency: investor_archetype_free_ppt_frequency || ''
       }
     };
 
@@ -205,6 +208,7 @@ app.post('/webhook/ghl-to-hubspot', async (req, res) => {
     });
   }
 });
+
 
 app.listen(port, () => {
   console.log(`🚀 Webhook server listening on port ${port}`);
