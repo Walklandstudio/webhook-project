@@ -252,7 +252,4 @@ app.post('/webhook/new-ghl-account', async (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 Webhook server listening on port ${port}`);
 });
-res.status(200).json({
-  status: 'success',
-  data: resp.data
-});
+
