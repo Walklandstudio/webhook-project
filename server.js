@@ -1,236 +1,160 @@
-// server.js
-require('dotenv').config();
+require('dotenv').config(); // ✅ Load .env into process.env
 
 const express = require('express');
-const fs = require('fs');
-const axios = require('axios');
-
-const app = express();
-const port = process.env.PORT || 3000;
+const fs      = require('fs');
+const axios   = require('axios');
+const app     = express();
+const port    = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// ==== Utility: logging =====
+// Confirm ENV loading
+console.log("🔍 Loaded ENV keys:", {
+  ACCOUNT_A_API: !!process.env.ACCOUNT_A_API,
+  ACCOUNT_B_API: !!process.env.ACCOUNT_B_API,
+  ACCOUNT_C_API: !!process.env.ACCOUNT_C_API
+});
+
+// Helper: append a timestamped JSON entry to a file
 function logToFile(filename, data) {
   const entry = { timestamp: new Date().toISOString(), payload: data };
   fs.appendFile(filename, JSON.stringify(entry) + '\n', err => {
     if (err) console.error(`❌ Error writing to ${filename}:`, err);
-    else console.log(`✅ Logged to ${filename}`);
+    else     console.log(`✅ Logged to ${filename}`);
   });
 }
 
-// ==== Utility: security (optional) =====
-function assertSharedSecret(req, res) {
-  const configured = process.env.SHARED_SECRET;
-  if (!configured) return true; // not enforcing
-  const incoming = req.headers['x-shared-secret'] || req.query.secret || (req.body && req.body.secret);
-  if (incoming && String(incoming) === String(configured)) return true;
-  res.status(401).json({ status: 'error', message: 'Unauthorized (shared secret missing/invalid)' });
-  return false;
-}
-
-// ==== Utility: field normalization =====
-function pick(payload, ...paths) {
-  for (const p of paths) {
-    const v = p.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), payload);
-    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
-  }
-  return undefined;
-}
-
-function ensureArrayTags(v) {
-  if (Array.isArray(v)) return v;
-  if (typeof v === 'string') {
-    return v.split(',').map(t => t.trim()).filter(Boolean);
-  }
-  return [];
-}
-
-/**
- * Build a LeadConnector contact payload with proper camelCase keys.
- * - payload: inbound JSON
- * - defaultTags: tags to always add (e.g., ["From Account A"])
- * - locationId: optional; include if your account requires it
- * - tagFromKeysRegex: optional regex; if a key matches and has a value, treat the value as a tag
- */
-function buildContactPayload(payload, defaultTags = [], locationId = undefined, tagFromKeysRegex = undefined) {
-  const email     = pick(payload, 'email', 'contact.email', 'contact.email_address');
-  const phone     = pick(payload, 'phone', 'contact.phone', 'contact.phone_number');
-  const firstName = pick(payload, 'firstName', 'firstname', 'first_name', 'contact.first_name', 'contact.firstname');
-  const lastName  = pick(payload, 'lastName', 'lastname', 'last_name', 'contact.last_name', 'contact.lastname');
-
-  let tags = ensureArrayTags(pick(payload, 'tags', 'contact.tags'));
-
-  // Optionally treat certain key values as tags (e.g., competency_coach_* fields)
-  if (tagFromKeysRegex) {
-    for (const [k, v] of Object.entries(payload)) {
-      if (!v) continue;
-      if (tagFromKeysRegex.test(k)) tags.push(String(v).trim());
-    }
-  }
-
-  // Prepend default/source tags and de-dup
-  for (let i = defaultTags.length - 1; i >= 0; i--) {
-    if (!tags.includes(defaultTags[i])) tags.unshift(defaultTags[i]);
-  }
-  tags = [...new Set(tags)].filter(Boolean);
-
-  const contact = {};
-  if (email) contact.email = email;
-  if (phone) contact.phone = phone;
-  if (firstName) contact.firstName = firstName; // camelCase for API
-  if (lastName) contact.lastName = lastName;    // camelCase for API
-  if (tags.length) contact.tags = tags;
-  if (locationId) contact.locationId = locationId; // only if needed
-
-  return contact;
-}
-
-async function upsertToGHL(apiKey, contact) {
-  const resp = await axios.post(
-    'https://rest.gohighlevel.com/v1/contacts/',
-    contact,
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        // If you see "version required", uncomment the next line:
-        // 'Version': '2021-07-28'
-      },
-      timeout: 15000
-    }
-  );
-  return resp;
-}
-
-// ==== Env sanity check ====
-console.log("🔍 Loaded ENV keys:", {
-  ACCOUNT_A_API: !!process.env.ACCOUNT_A_API,
-  ACCOUNT_B_API: !!process.env.ACCOUNT_B_API,
-  ACCOUNT_C_API: !!process.env.ACCOUNT_C_API,
-  NEW_GHL_API: !!process.env.NEW_GHL_API,
-  HUBSPOT_ACCESS_TOKEN: !!process.env.HUBSPOT_ACCESS_TOKEN,
-  SHARED_SECRET: !!process.env.SHARED_SECRET
-});
-
-// ===================== WEBHOOKS ===================== //
-
-// Account A → its own GHL (if you need it)
+// ── WEBHOOK 1 (Account A) ───────────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  if (!assertSharedSecret(req, res)) return;
   const payload = req.body;
-  console.log('📩 Account A inbound:', JSON.stringify(payload, null, 2));
-  logToFile('accountA-log.json', { inbound: payload });
+  console.log('📩 Account A Webhook:', payload);
+  logToFile('accountA-log.json', payload);
 
-  const contact = buildContactPayload(
-    payload,
-    ['From Account A'],
-    process.env.ACCOUNT_A_LOCATION_ID,
-    /competency_coach/i // treat these key values as tags too, optional
-  );
+  // Build only the fields GHL needs:
+  const contact = {
+    email:     payload.email   || payload.contact?.email,
+    phone:     payload.phone   || payload.contact?.phone,
+    firstName: payload.firstName || payload.contact?.first_name,
+    lastName:  payload.lastName  || payload.contact?.last_name,
+    tags:      payload.tags    || payload.contact?.tags || []
+  };
 
+  // Skip if missing both required fields
   if (!contact.email && !contact.phone) {
-    console.log('⚠️ Skipping A: missing both email and phone');
-    return res.status(400).json({ status: 'error', message: 'Missing email or phone' });
+    console.log('⚠️ Skipping Account A: missing both email and phone');
+    return res.status(400).send('Missing email or phone');
   }
 
   try {
-    const resp = await upsertToGHL(process.env.ACCOUNT_A_API, contact);
-    console.log('✅ A upsert:', resp.data);
-    logToFile('accountA-log.json', { ghl_response: resp.data });
-    return res.status(200).json({ status: 'success', data: resp.data });
+    const resp = await axios.post(
+      'https://rest.gohighlevel.com/v1/contacts/',
+      contact,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.ACCOUNT_A_API}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log('✅ Sent to Account A GHL, contact id:', resp.data.id || resp.data);
+    res.status(200).send('Sent to Account A');
   } catch (err) {
-    const details = err.response?.data || err.message;
-    console.error('❌ A error:', details);
-    logToFile('accountA-log.json', { error: details });
-    return res.status(500).json({ status: 'error', error: details });
+    console.error('❌ Error sending to Account A GHL:', err.response?.data || err.message);
+    res.status(500).send('Error sending to Account A');
   }
 });
 
-// Account A → Account B (your main path)
+// ── WEBHOOK 2 (Account B) ───────────────────────────────────────
 app.post('/webhook2', async (req, res) => {
-  if (!assertSharedSecret(req, res)) return;
   const payload = req.body;
-  console.log('📩 Account B inbound:', JSON.stringify(payload, null, 2));
-  logToFile('accountB-log.json', { inbound: payload });
+  console.log('📩 Account B Webhook:', payload);
+  logToFile('accountB-log.json', payload);
 
-  const contact = buildContactPayload(
-    payload,
-    ['From Account A'], // source tag for Account B workflow filtering
-    process.env.ACCOUNT_B_LOCATION_ID,
-    /competency_coach/i
-  );
+  const contact = {
+    email:     payload.email   || payload.contact?.email,
+    phone:     payload.phone   || payload.contact?.phone,
+    firstName: payload.firstName || payload.contact?.first_name,
+    lastName:  payload.lastName  || payload.contact?.last_name,
+    tags:      payload.tags    || payload.contact?.tags || []
+  };
 
   if (!contact.email && !contact.phone) {
-    console.log('⚠️ Skipping B: missing both email and phone');
-    return res.status(400).json({ status: 'error', message: 'Missing email or phone' });
+    console.log('⚠️ Skipping Account B: missing both email and phone');
+    return res.status(400).send('Missing email or phone');
   }
 
-  console.log('→ Contact to GHL (B):', contact);
-
   try {
-    const resp = await upsertToGHL(process.env.ACCOUNT_B_API, contact);
-    console.log('✅ B upsert:', resp.data);
-    logToFile('accountB-log.json', { ghl_response: resp.data });
-    return res.status(200).json({ status: 'success', data: resp.data });
+    const resp = await axios.post(
+      'https://rest.gohighlevel.com/v1/contacts/',
+      contact,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.ACCOUNT_B_API}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log('✅ Sent to Account B GHL, contact id:', resp.data.id || resp.data);
+    res.status(200).send('Sent to Account B');
   } catch (err) {
-    const details = err.response?.data || err.message;
-    console.error('❌ B error:', details);
-    logToFile('accountB-log.json', { error: details });
-    return res.status(500).json({ status: 'error', error: details });
+    console.error('❌ Error sending to Account B GHL:', err.response?.data || err.message);
+    res.status(500).send('Error sending to Account B');
   }
 });
 
-// Account A → Account C (optional)
+// ── WEBHOOK 3 (Account C) ───────────────────────────────────────
 app.post('/webhook3', async (req, res) => {
-  if (!assertSharedSecret(req, res)) return;
   const payload = req.body;
-  console.log('📩 Account C inbound:', JSON.stringify(payload, null, 2));
-  logToFile('accountC-log.json', { inbound: payload });
+  console.log('📩 Account C Webhook:', payload);
+  logToFile('accountC-log.json', payload);
 
-  const contact = buildContactPayload(
-    payload,
-    ['From Account A'],
-    process.env.ACCOUNT_C_LOCATION_ID,
-    /competency_coach/i
-  );
+  const contact = {
+    email:     payload.email   || payload.contact?.email,
+    phone:     payload.phone   || payload.contact?.phone,
+    firstName: payload.firstName || payload.contact?.first_name,
+    lastName:  payload.lastName  || payload.contact?.last_name,
+    tags:      payload.tags    || payload.contact?.tags || []
+  };
 
   if (!contact.email && !contact.phone) {
-    console.log('⚠️ Skipping C: missing both email and phone');
-    return res.status(400).json({ status: 'error', message: 'Missing email or phone' });
+    console.log('⚠️ Skipping Account C: missing both email and phone');
+    return res.status(400).send('Missing email or phone');
   }
 
   try {
-    const resp = await upsertToGHL(process.env.ACCOUNT_C_API, contact);
-    console.log('✅ C upsert:', resp.data);
-    logToFile('accountC-log.json', { ghl_response: resp.data });
-    return res.status(200).json({ status: 'success', data: resp.data });
+    const resp = await axios.post(
+      'https://rest.gohighlevel.com/v1/contacts/',
+      contact,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.ACCOUNT_C_API}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log('✅ Sent to Account C GHL, contact id:', resp.data.id || resp.data);
+    res.status(200).send('Sent to Account C');
   } catch (err) {
-    const details = err.response?.data || err.message;
-    console.error('❌ C error:', details);
-    logToFile('accountC-log.json', { error: details });
-    return res.status(500).json({ status: 'error', error: details });
+    console.error('❌ Error sending to Account C GHL:', err.response?.data || err.message);
+    res.status(500).send('Error sending to Account C');
   }
 });
 
-// Health + env
+// 🔍 ENV-TEST (debug): verify keys loaded
 app.get('/env-test', (req, res) => {
   res.json({
     accountA: process.env.ACCOUNT_A_API ? '✅ Loaded' : '❌ Missing',
     accountB: process.env.ACCOUNT_B_API ? '✅ Loaded' : '❌ Missing',
-    accountC: process.env.ACCOUNT_C_API ? '✅ Loaded' : '❌ Missing',
-    newGhl: process.env.NEW_GHL_API ? '✅ Loaded' : '❌ Missing',
-    hubspot: process.env.HUBSPOT_ACCESS_TOKEN ? '✅ Loaded' : '❌ Missing'
+    accountC: process.env.ACCOUNT_C_API ? '✅ Loaded' : '❌ Missing'
   });
 });
 
+// 🚀 Health-check
 app.get('/', (req, res) => {
   res.send('✅ Webhook server running.');
 });
-
-// GHL → HubSpot bridge (unchanged, returns JSON)
+// ── WEBHOOK 4 (GHL to HubSpot) ───────────────────────────────
 app.post('/webhook/ghl-to-hubspot', async (req, res) => {
-  if (!assertSharedSecret(req, res)) return;
   try {
     const {
       email,
@@ -255,7 +179,7 @@ app.post('/webhook/ghl-to-hubspot', async (req, res) => {
         lastname: lastname || '',
         phone: phone || '',
         source: source || '',
-        tags: Array.isArray(tags) ? tags.join(',') : (tags || ''),
+        tags: tags || '',
         investor_archetype_ppt_frequency: investor_archetype_ppt_frequency || '',
         investor_archetype_ppt_profile: investor_archetype_ppt_profile || '',
         investor_archetype_free_ppt_frequency: investor_archetype_free_ppt_frequency || ''
@@ -269,12 +193,12 @@ app.post('/webhook/ghl-to-hubspot', async (req, res) => {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}`
-        },
-        timeout: 15000
+        }
       }
     );
 
-    console.log('✅ HubSpot upsert:', hubspotResponse.data);
+    console.log('✅ Contact sent to HubSpot:', hubspotResponse.data);
+
     res.status(200).json({ status: 'success', data: hubspotResponse.data });
   } catch (error) {
     console.error('❌ HubSpot Error:', error.response?.data || error.message);
@@ -284,41 +208,51 @@ app.post('/webhook/ghl-to-hubspot', async (req, res) => {
     });
   }
 });
-
-// New GHL account route (if you need to target another location)
+// ── WEBHOOK 5 (New GHL Account) ───────────────────────────────
 app.post('/webhook/new-ghl-account', async (req, res) => {
-  if (!assertSharedSecret(req, res)) return;
   const payload = req.body;
-  console.log('📩 New GHL inbound:', JSON.stringify(payload, null, 2));
-  logToFile('new-ghl-log.json', { inbound: payload });
+  console.log('📩 New GHL Account Webhook:', payload);
 
-  const contact = buildContactPayload(
-    payload,
-    ['From Account A'],
-    process.env.NEW_GHL_LOCATION_ID,
-    /competency_coach/i
-  );
+  // Build the contact object with your fields as needed
+  const contact = {
+    email:     payload.email   || payload.contact?.email,
+    phone:     payload.phone   || payload.contact?.phone,
+    firstName: payload.firstName || payload.contact?.first_name,
+    lastName:  payload.lastName  || payload.contact?.last_name,
+    tags:      payload.tags    || payload.contact?.tags || []
+    // Add more fields if you want to send custom properties!
+  };
 
+  // Require at least email or phone
   if (!contact.email && !contact.phone) {
     console.log('⚠️ Skipping new GHL: missing both email and phone');
-    return res.status(400).json({ status: 'error', message: 'Missing email or phone' });
+    return res.status(400).send('Missing email or phone');
   }
 
   try {
-    const resp = await upsertToGHL(process.env.NEW_GHL_API, contact);
-    console.log('✅ New GHL upsert:', resp.data);
-    logToFile('new-ghl-log.json', { ghl_response: resp.data });
-    res.status(200).json({ status: 'success', data: resp.data });
+    const resp = await axios.post(
+      'https://rest.gohighlevel.com/v1/contacts/',
+      contact,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.NEW_GHL_API}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log('✅ Sent to new GHL, contact id:', resp.data.id || resp.data);
+    res.status(200).send('Sent to new GHL account');
   } catch (err) {
-    const details = err.response?.data || err.message;
-    console.error('❌ New GHL error:', details);
-    logToFile('new-ghl-log.json', { error: details });
-    res.status(500).json({ status: 'error', error: details });
+    console.error('❌ Error sending to new GHL:', err.response?.data || err.message);
+    res.status(500).send('Error sending to new GHL');
   }
 });
+
 
 app.listen(port, () => {
   console.log(`🚀 Webhook server listening on port ${port}`);
 });
+
+
 
 
