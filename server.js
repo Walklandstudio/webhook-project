@@ -226,28 +226,35 @@ app.post('/webhook/ghl-to-hubspot-batch', async (req, res) => {
     return res.status(500).json({ status: 'error', error: details });
   }
 });
-// ── WEBHOOK 5 (New GHL Account) ───────────────────────────────
+import express from 'express';
+import axios from 'axios';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(express.json()); // 👈 needed to parse webhook JSON
+
+// ── WEBHOOK (Send to Account B) ───────────────────────────────
 app.post('/webhook/new-ghl-account', async (req, res) => {
   const payload = req.body;
   console.log('📩 Incoming payload:', JSON.stringify(payload, null, 2));
 
-  // Explicit locationId for Account B
-  const DEST_LOCATION_ID = "UDR77PqyO2TUBp6EFej3";
-
-  // Build contact
   const contact = {
-    firstName: payload.firstName ?? payload.contact?.first_name ?? payload.contact?.firstName,
-    lastName:  payload.lastName  ?? payload.contact?.last_name  ?? payload.contact?.lastName,
+    firstName: payload.firstName ?? payload.contact?.first_name,
+    lastName:  payload.lastName  ?? payload.contact?.last_name,
     email:     payload.email     ?? payload.contact?.email,
     phone:     payload.phone     ?? payload.contact?.phone,
-    tags: Array.isArray(payload.tags) 
-      ? payload.tags 
+    tags: Array.isArray(payload.tags)
+      ? payload.tags
       : Array.isArray(payload.contact?.tags) ? payload.contact.tags : [],
-    locationId: DEST_LOCATION_ID, // 👈 ensures Account B receives it
+    locationId: process.env.NEW_GHL_LOCATION_ID, // 👈 goes in body
   };
 
   if (!contact.email && !contact.phone) {
-    console.log('⚠️ Skipping new GHL: missing both email and phone');
+    console.log('⚠️ Skipping: missing both email and phone');
     return res.status(400).send('Missing email or phone');
   }
 
@@ -257,23 +264,33 @@ app.post('/webhook/new-ghl-account', async (req, res) => {
       contact,
       {
         headers: {
-          Authorization: `Bearer ${process.env.NEW_GHL_API}`, // token scoped to Account B
+          Authorization: `Bearer ${process.env.NEW_GHL_API}`, // 👈 Location API Key
           'Content-Type': 'application/json',
           'Accept': 'application/json',
           'Version': '2021-07-28',
         },
+        timeout: 15000,
       }
     );
 
-    console.log('✅ Contact created in Account B:', resp.status, resp.data);
-    return res.status(200).send(`Sent to new GHL account (id: ${resp.data?.id ?? 'unknown'})`);
+    console.log('✅ Contact created:', resp.status, resp.data);
+    return res
+      .status(200)
+      .send(`Sent to Account B (id: ${resp.data?.id ?? 'unknown'})`);
   } catch (err) {
     const status = err.response?.status;
     const data = err.response?.data;
     console.error('❌ Error sending to Account B:', status, data || err.message);
-    return res.status(500).send(`Error sending to Account B: ${status ?? ''}`);
+    return res
+      .status(500)
+      .send(`Error sending to Account B: ${status ?? ''}`);
   }
 });
+
+app.listen(port, () => {
+  console.log(`🚀 Webhook server listening on port ${port}`);
+});
+
 
 /* ------------------------- Start ------------------------- */
 app.listen(port, () => {
