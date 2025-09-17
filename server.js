@@ -19,7 +19,7 @@ function logToFile(filename, data) {
   });
 }
 
-// Normalizes incoming payload into HubSpot contact properties
+// Normalize incoming payload into HubSpot contact properties (EXCLUDING tags + tags_completed_*)
 function normalizeHubSpotContact(raw = {}) {
   const email     = raw.email;
   const firstname = raw.firstname ?? raw.firstName ?? '';
@@ -27,20 +27,19 @@ function normalizeHubSpotContact(raw = {}) {
   const phone     = raw.phone ?? '';
   const source    = raw.source ?? '';
 
-  const tags =
-    Array.isArray(raw.tags) ? raw.tags.join(',') :
-    (typeof raw.tags === 'string' ? raw.tags : '');
-
   return {
+    // HubSpot built-ins
     email,
     firstname,
     lastname,
     phone,
     source,
-    tags,
-    investor_archetype_ppt_frequency: raw.investor_archetype_ppt_frequency ?? '',
-    investor_archetype_ppt_profile:   raw.investor_archetype_ppt_profile ?? '',
+
+    // Your custom properties that already exist in HubSpot
+    investor_archetype_ppt_frequency:      raw.investor_archetype_ppt_frequency ?? '',
+    investor_archetype_ppt_profile:        raw.investor_archetype_ppt_profile ?? '',
     investor_archetype_free_ppt_frequency: raw.investor_archetype_free_ppt_frequency ?? ''
+    // NOTE: intentionally excluding "tags", "tags_completed_full", "tags_completed_free"
   };
 }
 
@@ -52,30 +51,43 @@ console.log("🔍 Loaded ENV keys:", {
 });
 
 /* ---------------------- Account A/B/C → GHL ---------------------- */
+function buildGhlContact(payload) {
+  return {
+    email:     payload.email   || payload.contact?.email,
+    phone:     payload.phone   || payload.contact?.phone,
+    firstName: payload.firstName || payload.firstname || payload.contact?.first_name || payload.contact?.firstname,
+    lastName:  payload.lastName  || payload.lastname  || payload.contact?.last_name  || payload.contact?.lastname,
+    // tags can be array or comma-separated string
+    tags: Array.isArray(payload.tags)
+      ? payload.tags
+      : (payload.tags ? String(payload.tags).split(',').map(t => t.trim()).filter(Boolean) : [])
+  };
+}
+
+async function upsertToGhl(apiKey, contact) {
+  return axios.post('https://rest.gohighlevel.com/v1/contacts/', contact, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+      // If your account requires it, also add: 'Version': '2021-07-28'
+    },
+    timeout: 15000
+  });
+}
+
 app.post('/webhook', async (req, res) => {
   const payload = req.body;
   console.log('📩 Account A Webhook:', payload);
   logToFile('accountA-log.json', payload);
 
-  const contact = {
-    email:     payload.email   || payload.contact?.email,
-    phone:     payload.phone   || payload.contact?.phone,
-    firstName: payload.firstName || payload.firstname || payload.contact?.first_name || payload.contact?.firstname,
-    lastName:  payload.lastName  || payload.lastname  || payload.contact?.last_name  || payload.contact?.lastname,
-    tags:      Array.isArray(payload.tags)
-                ? payload.tags
-                : (payload.tags ? String(payload.tags).split(',').map(t => t.trim()) : [])
-  };
-
+  const contact = buildGhlContact(payload);
   if (!contact.email && !contact.phone) {
     console.log('⚠️ Skipping Account A: missing both email and phone');
     return res.status(400).send('Missing email or phone');
   }
 
   try {
-    const resp = await axios.post('https://rest.gohighlevel.com/v1/contacts/', contact, {
-      headers: { Authorization: `Bearer ${process.env.ACCOUNT_A_API}`, 'Content-Type': 'application/json' }
-    });
+    const resp = await upsertToGhl(process.env.ACCOUNT_A_API, contact);
     console.log('✅ Sent to Account A GHL, id:', resp.data.id || resp.data);
     res.status(200).send('Sent to Account A');
   } catch (err) {
@@ -89,25 +101,14 @@ app.post('/webhook2', async (req, res) => {
   console.log('📩 Account B Webhook:', payload);
   logToFile('accountB-log.json', payload);
 
-  const contact = {
-    email:     payload.email   || payload.contact?.email,
-    phone:     payload.phone   || payload.contact?.phone,
-    firstName: payload.firstName || payload.firstname || payload.contact?.first_name || payload.contact?.firstname,
-    lastName:  payload.lastName  || payload.lastname  || payload.contact?.last_name  || payload.contact?.lastname,
-    tags:      Array.isArray(payload.tags)
-                ? payload.tags
-                : (payload.tags ? String(payload.tags).split(',').map(t => t.trim()) : [])
-  };
-
+  const contact = buildGhlContact(payload);
   if (!contact.email && !contact.phone) {
     console.log('⚠️ Skipping Account B: missing both email and phone');
     return res.status(400).send('Missing email or phone');
   }
 
   try {
-    const resp = await axios.post('https://rest.gohighlevel.com/v1/contacts/', contact, {
-      headers: { Authorization: `Bearer ${process.env.ACCOUNT_B_API}`, 'Content-Type': 'application/json' }
-    });
+    const resp = await upsertToGhl(process.env.ACCOUNT_B_API, contact);
     console.log('✅ Sent to Account B GHL, id:', resp.data.id || resp.data);
     res.status(200).send('Sent to Account B');
   } catch (err) {
@@ -121,25 +122,14 @@ app.post('/webhook3', async (req, res) => {
   console.log('📩 Account C Webhook:', payload);
   logToFile('accountC-log.json', payload);
 
-  const contact = {
-    email:     payload.email   || payload.contact?.email,
-    phone:     payload.phone   || payload.contact?.phone,
-    firstName: payload.firstName || payload.firstname || payload.contact?.first_name || payload.contact?.firstname,
-    lastName:  payload.lastName  || payload.lastname  || payload.contact?.last_name  || payload.contact?.lastname,
-    tags:      Array.isArray(payload.tags)
-                ? payload.tags
-                : (payload.tags ? String(payload.tags).split(',').map(t => t.trim()) : [])
-  };
-
+  const contact = buildGhlContact(payload);
   if (!contact.email && !contact.phone) {
     console.log('⚠️ Skipping Account C: missing both email and phone');
     return res.status(400).send('Missing email or phone');
   }
 
   try {
-    const resp = await axios.post('https://rest.gohighlevel.com/v1/contacts/', contact, {
-      headers: { Authorization: `Bearer ${process.env.ACCOUNT_C_API}`, 'Content-Type': 'application/json' }
-    });
+    const resp = await upsertToGhl(process.env.ACCOUNT_C_API, contact);
     console.log('✅ Sent to Account C GHL, id:', resp.data.id || resp.data);
     res.status(200).send('Sent to Account C');
   } catch (err) {
@@ -176,7 +166,7 @@ app.post('/webhook/ghl-to-hubspot', async (req, res) => {
       timeout: 15000
     });
 
-    // Search for existing contact by email
+    // Search by email
     const searchBody = {
       filterGroups: [{ filters: [{ propertyName: 'email', operator: 'EQ', value: properties.email }] }],
       properties: Object.keys(properties),
@@ -209,6 +199,7 @@ app.post('/webhook/ghl-to-hubspot-batch', async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Body must include contacts[]' });
     }
 
+    // Batch limit 100
     const chunk = (arr, size) => arr.reduce((a, _, i) => (i % size ? a : [...a, arr.slice(i, i + size)]), []);
     const chunks = chunk(items, 100);
 
@@ -219,7 +210,6 @@ app.post('/webhook/ghl-to-hubspot-batch', async (req, res) => {
     });
 
     const results = [];
-
     for (const group of chunks) {
       const inputs = group.map(c => ({
         idProperty: 'email',
