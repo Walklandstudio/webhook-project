@@ -226,6 +226,45 @@ app.post('/webhook/ghl-to-hubspot-batch', async (req, res) => {
     return res.status(500).json({ status: 'error', error: details });
   }
 });
+// ── WEBHOOK 5 (New GHL Account) ───────────────────────────────
+app.post('/webhook/new-ghl-account', async (req, res) => {
+  const payload = req.body;
+  console.log('📩 New GHL Account Webhook:', payload);
+
+  // Build the contact object with your fields as needed
+  const contact = {
+    email:     payload.email   || payload.contact?.email,
+    phone:     payload.phone   || payload.contact?.phone,
+    firstName: payload.firstName || payload.contact?.first_name,
+    lastName:  payload.lastName  || payload.contact?.last_name,
+    tags:      payload.tags    || payload.contact?.tags || []
+    // Add more fields if you want to send custom properties!
+  };
+
+  // Require at least email or phone
+  if (!contact.email && !contact.phone) {
+    console.log('⚠️ Skipping new GHL: missing both email and phone');
+    return res.status(400).send('Missing email or phone');
+  }
+
+  try {
+    const resp = await axios.post(
+      'https://rest.gohighlevel.com/v1/contacts/',
+      contact,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.NEW_GHL_API}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log('✅ Sent to new GHL, contact id:', resp.data.id || resp.data);
+    res.status(200).send('Sent to new GHL account');
+  } catch (err) {
+    console.error('❌ Error sending to new GHL:', err.response?.data || err.message);
+    res.status(500).send('Error sending to new GHL');
+  }
+});
 
 /* ------------------------- Start ------------------------- */
 app.listen(port, () => {
