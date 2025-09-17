@@ -238,7 +238,6 @@ app.post('/webhook/ghl-to-hubspot-batch', async (req, res) => {
   }
 });
 
-/* -------------------- Explicit B route (new) -------------------- */
 app.post('/webhook/new-ghl-account', async (req, res) => {
   const payload = req.body;
   console.log('📩 Incoming payload (new B):', JSON.stringify(payload, null, 2));
@@ -258,21 +257,49 @@ app.post('/webhook/new-ghl-account', async (req, res) => {
     return res.status(400).send('Missing email or phone');
   }
 
+  const key = process.env.ACCOUNT_B_API || process.env.NEW_GHL_API;
+  const loc = process.env.NEW_GHL_LOCATION_ID;
+
+  if (!key || !loc) {
+    console.error('❌ Missing env vars:', {
+      ACCOUNT_B_API_present: !!process.env.ACCOUNT_B_API,
+      NEW_GHL_API_present: !!process.env.NEW_GHL_API,
+      NEW_GHL_LOCATION_ID_present: !!process.env.NEW_GHL_LOCATION_ID
+    });
+    return res.status(500).send('Server not configured: missing API key or locationId');
+  }
+
   try {
-    const resp = await upsertToGhl(
-      process.env.ACCOUNT_B_API || process.env.NEW_GHL_API, // prefer B's key
-      contact,
-      process.env.NEW_GHL_LOCATION_ID // force into Account B
+    const resp = await axios.post(
+      'https://services.leadconnectorhq.com/contacts/',
+      { ...contact, locationId: loc },
+      {
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Version': '2021-07-28',
+        },
+        timeout: 15000,
+      }
     );
-    console.log('✅ Contact created in Account B (new route):', resp.status, resp.data);
+
+    console.log('✅ Contact created in Account B:', resp.status, resp.data);
     return res.status(200).send(`Sent to Account B (id: ${resp.data?.id ?? 'unknown'})`);
   } catch (err) {
     const status = err.response?.status;
     const data = err.response?.data;
-    console.error('❌ Error sending to Account B (new route):', status, data || err.message);
-    return res.status(500).send(`Error sending to Account B: ${status ?? ''}`);
+    console.error('❌ Error sending to Account B:', status, data || err.message);
+
+    // surface the API error text for easier debugging
+    return res.status(500).json({
+      status: 'error',
+      httpStatus: status ?? null,
+      details: data || err.message
+    });
   }
 });
+
 
 /* ------------------------- Start ------------------------- */
 app.listen(port, () => {
