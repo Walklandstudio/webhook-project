@@ -1,4 +1,4 @@
-// server.js
+// server.js (CommonJS)
 require('dotenv').config();
 
 const express = require('express');
@@ -47,6 +47,7 @@ console.log("🔍 Loaded ENV keys:", {
   ACCOUNT_A_API: !!process.env.ACCOUNT_A_API,
   ACCOUNT_B_API: !!process.env.ACCOUNT_B_API,
   ACCOUNT_C_API: !!process.env.ACCOUNT_C_API,
+  NEW_GHL_LOCATION_ID: !!process.env.NEW_GHL_LOCATION_ID,
   HUBSPOT_ACCESS_TOKEN: !!process.env.HUBSPOT_ACCESS_TOKEN
 });
 
@@ -64,12 +65,19 @@ function buildGhlContact(payload) {
   };
 }
 
-async function upsertToGhl(apiKey, contact) {
-  return axios.post('https://rest.gohighlevel.com/v1/contacts/', contact, {
+/**
+ * Upsert contact to GHL (LeadConnector) with modern endpoint.
+ * If locationId is provided, the contact will be created in that sub-account.
+ */
+async function upsertToGhl(apiKey, contact, locationId) {
+  const body = locationId ? { ...contact, locationId } : contact;
+
+  return axios.post('https://services.leadconnectorhq.com/contacts/', body, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-      // If your account requires it, also add: 'Version': '2021-07-28'
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Version': '2021-07-28'
     },
     timeout: 15000
   });
@@ -87,7 +95,8 @@ app.post('/webhook', async (req, res) => {
   }
 
   try {
-    const resp = await upsertToGhl(process.env.ACCOUNT_A_API, contact);
+    // If you have a specific A location, set ACCOUNT_A_LOCATION_ID in .env and pass it here
+    const resp = await upsertToGhl(process.env.ACCOUNT_A_API, contact, process.env.ACCOUNT_A_LOCATION_ID);
     console.log('✅ Sent to Account A GHL, id:', resp.data.id || resp.data);
     res.status(200).send('Sent to Account A');
   } catch (err) {
@@ -108,7 +117,8 @@ app.post('/webhook2', async (req, res) => {
   }
 
   try {
-    const resp = await upsertToGhl(process.env.ACCOUNT_B_API, contact);
+    // Prefer explicit location for B if you have it
+    const resp = await upsertToGhl(process.env.ACCOUNT_B_API, contact, process.env.ACCOUNT_B_LOCATION_ID || process.env.NEW_GHL_LOCATION_ID);
     console.log('✅ Sent to Account B GHL, id:', resp.data.id || resp.data);
     res.status(200).send('Sent to Account B');
   } catch (err) {
@@ -129,7 +139,7 @@ app.post('/webhook3', async (req, res) => {
   }
 
   try {
-    const resp = await upsertToGhl(process.env.ACCOUNT_C_API, contact);
+    const resp = await upsertToGhl(process.env.ACCOUNT_C_API, contact, process.env.ACCOUNT_C_LOCATION_ID);
     console.log('✅ Sent to Account C GHL, id:', resp.data.id || resp.data);
     res.status(200).send('Sent to Account C');
   } catch (err) {
@@ -144,7 +154,8 @@ app.get('/env-test', (req, res) => {
     accountA: process.env.ACCOUNT_A_API ? '✅ Loaded' : '❌ Missing',
     accountB: process.env.ACCOUNT_B_API ? '✅ Loaded' : '❌ Missing',
     accountC: process.env.ACCOUNT_C_API ? '✅ Loaded' : '❌ Missing',
-    hubspot:  process.env.HUBSPOT_ACCESS_TOKEN ? '✅ Loaded' : '❌ Missing'
+    hubspot:  process.env.HUBSPOT_ACCESS_TOKEN ? '✅ Loaded' : '❌ Missing',
+    newGhlLocationId: process.env.NEW_GHL_LOCATION_ID ? '✅ Loaded' : '❌ Missing'
   });
 });
 
@@ -226,78 +237,44 @@ app.post('/webhook/ghl-to-hubspot-batch', async (req, res) => {
     return res.status(500).json({ status: 'error', error: details });
   }
 });
-import express from 'express';
-import axios from 'axios';
-import dotenv from 'dotenv';
 
-dotenv.config();
-
-const app = express();
-const port = process.env.PORT || 3000;
-
-app.use(express.json()); // 👈 needed to parse webhook JSON
-
-// ── WEBHOOK (Send to Account B) ───────────────────────────────
+/* -------------------- Explicit B route (new) -------------------- */
 app.post('/webhook/new-ghl-account', async (req, res) => {
   const payload = req.body;
-  console.log('📩 Incoming payload:', JSON.stringify(payload, null, 2));
+  console.log('📩 Incoming payload (new B):', JSON.stringify(payload, null, 2));
 
   const contact = {
-    firstName: payload.firstName ?? payload.contact?.first_name,
-    lastName:  payload.lastName  ?? payload.contact?.last_name,
+    firstName: payload.firstName ?? payload.contact?.first_name ?? payload.contact?.firstName,
+    lastName:  payload.lastName  ?? payload.contact?.last_name  ?? payload.contact?.lastName,
     email:     payload.email     ?? payload.contact?.email,
     phone:     payload.phone     ?? payload.contact?.phone,
     tags: Array.isArray(payload.tags)
       ? payload.tags
       : Array.isArray(payload.contact?.tags) ? payload.contact.tags : [],
-    locationId: process.env.NEW_GHL_LOCATION_ID, // 👈 goes in body
   };
 
   if (!contact.email && !contact.phone) {
-    console.log('⚠️ Skipping: missing both email and phone');
+    console.log('⚠️ Skipping new B: missing both email and phone');
     return res.status(400).send('Missing email or phone');
   }
 
   try {
-    const resp = await axios.post(
-      'https://services.leadconnectorhq.com/contacts/',
+    const resp = await upsertToGhl(
+      process.env.ACCOUNT_B_API || process.env.NEW_GHL_API, // prefer B's key
       contact,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.NEW_GHL_API}`, // 👈 Location API Key
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Version': '2021-07-28',
-        },
-        timeout: 15000,
-      }
+      process.env.NEW_GHL_LOCATION_ID // force into Account B
     );
-
-    console.log('✅ Contact created:', resp.status, resp.data);
-    return res
-      .status(200)
-      .send(`Sent to Account B (id: ${resp.data?.id ?? 'unknown'})`);
+    console.log('✅ Contact created in Account B (new route):', resp.status, resp.data);
+    return res.status(200).send(`Sent to Account B (id: ${resp.data?.id ?? 'unknown'})`);
   } catch (err) {
     const status = err.response?.status;
     const data = err.response?.data;
-    console.error('❌ Error sending to Account B:', status, data || err.message);
-    return res
-      .status(500)
-      .send(`Error sending to Account B: ${status ?? ''}`);
+    console.error('❌ Error sending to Account B (new route):', status, data || err.message);
+    return res.status(500).send(`Error sending to Account B: ${status ?? ''}`);
   }
 });
-
-app.listen(port, () => {
-  console.log(`🚀 Webhook server listening on port ${port}`);
-});
-
 
 /* ------------------------- Start ------------------------- */
 app.listen(port, () => {
   console.log(`🚀 Webhook server listening on port ${port}`);
 });
-
-
-
-
-
