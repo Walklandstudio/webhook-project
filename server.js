@@ -229,19 +229,23 @@ app.post('/webhook/ghl-to-hubspot-batch', async (req, res) => {
 // ── WEBHOOK 5 (New GHL Account) ───────────────────────────────
 app.post('/webhook/new-ghl-account', async (req, res) => {
   const payload = req.body;
-  console.log('📩 New GHL Account Webhook:', payload);
+  console.log('📩 Incoming payload:', JSON.stringify(payload, null, 2));
 
-  // Build the contact object with your fields as needed
+  // Explicit locationId for Account B
+  const DEST_LOCATION_ID = "UDR77PqyO2TUBp6EFej3";
+
+  // Build contact
   const contact = {
-    email:     payload.email   || payload.contact?.email,
-    phone:     payload.phone   || payload.contact?.phone,
-    firstName: payload.firstName || payload.contact?.first_name,
-    lastName:  payload.lastName  || payload.contact?.last_name,
-    tags:      payload.tags    || payload.contact?.tags || []
-    // Add more fields if you want to send custom properties!
+    firstName: payload.firstName ?? payload.contact?.first_name ?? payload.contact?.firstName,
+    lastName:  payload.lastName  ?? payload.contact?.last_name  ?? payload.contact?.lastName,
+    email:     payload.email     ?? payload.contact?.email,
+    phone:     payload.phone     ?? payload.contact?.phone,
+    tags: Array.isArray(payload.tags) 
+      ? payload.tags 
+      : Array.isArray(payload.contact?.tags) ? payload.contact.tags : [],
+    locationId: DEST_LOCATION_ID, // 👈 ensures Account B receives it
   };
 
-  // Require at least email or phone
   if (!contact.email && !contact.phone) {
     console.log('⚠️ Skipping new GHL: missing both email and phone');
     return res.status(400).send('Missing email or phone');
@@ -249,20 +253,25 @@ app.post('/webhook/new-ghl-account', async (req, res) => {
 
   try {
     const resp = await axios.post(
-      'https://rest.gohighlevel.com/v1/contacts/',
+      'https://services.leadconnectorhq.com/contacts/',
       contact,
       {
         headers: {
-          Authorization: `Bearer ${process.env.NEW_GHL_API}`,
-          'Content-Type': 'application/json'
-        }
+          Authorization: `Bearer ${process.env.NEW_GHL_API}`, // token scoped to Account B
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Version': '2021-07-28',
+        },
       }
     );
-    console.log('✅ Sent to new GHL, contact id:', resp.data.id || resp.data);
-    res.status(200).send('Sent to new GHL account');
+
+    console.log('✅ Contact created in Account B:', resp.status, resp.data);
+    return res.status(200).send(`Sent to new GHL account (id: ${resp.data?.id ?? 'unknown'})`);
   } catch (err) {
-    console.error('❌ Error sending to new GHL:', err.response?.data || err.message);
-    res.status(500).send('Error sending to new GHL');
+    const status = err.response?.status;
+    const data = err.response?.data;
+    console.error('❌ Error sending to Account B:', status, data || err.message);
+    return res.status(500).send(`Error sending to Account B: ${status ?? ''}`);
   }
 });
 
