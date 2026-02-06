@@ -28,11 +28,13 @@ function normalizeHubSpotContact(raw = {}) {
   const source = raw.source ?? "";
 
   return {
-    // HubSpot built-ins
+    // HubSpot built-ins (standard contact properties)
     email,
     firstname,
     lastname,
     phone,
+
+    // NOTE: "source" is NOT a default HubSpot contact property; leaving here for your existing portal usage
     source,
 
     // Your custom properties that already exist in HubSpot
@@ -40,15 +42,13 @@ function normalizeHubSpotContact(raw = {}) {
     investor_archetype_ppt_profile: raw.investor_archetype_ppt_profile ?? "",
     investor_archetype_free_ppt_frequency:
       raw.investor_archetype_free_ppt_frequency ?? "",
-    // NOTE: intentionally excluding "tags", "tags_completed_full", "tags_completed_free"
   };
 }
 
 // NEW: Normalize payload for OperatingFrame HubSpot portal
+// IMPORTANT: uses your exact HubSpot internal property names:
+//   FreeOperatingFrameFrequency, FreeOperatingFrameTest, Source
 function normalizeHubSpotContactOperatingFrame(raw = {}) {
-  // Support both shapes:
-  // 1) top-level: { email, firstname, ... }
-  // 2) GHL-style merge payload: { contact: { email, first_name, ... } }
   const c = raw.contact ?? raw;
 
   const email = raw.email ?? c.email;
@@ -65,31 +65,36 @@ function normalizeHubSpotContactOperatingFrame(raw = {}) {
     c.lastname ??
     "";
   const phone = raw.phone ?? c.phone ?? "";
-  const source = raw.source ?? "GHL Survey";
 
-  // Custom fields (support a few common spellings/paths)
-  const free_operatingframe_frequency =
+  // store in your custom HubSpot property "Source" (capital S)
+  const Source = raw.source ?? c.source ?? "GHL Survey";
+
+  // store in your custom HubSpot properties (exact names from screenshot)
+  const FreeOperatingFrameFrequency =
     raw.free_operatingframe_frequency ??
     c.free_operatingframe_frequency ??
-    raw.contact?.free_operatingframe_frequency ??
+    raw.FreeOperatingFrameFrequency ??
+    c.FreeOperatingFrameFrequency ??
     "";
-  const free_operatingframe_test =
+
+  const FreeOperatingFrameTest =
     raw.free_operatingframe_test ??
     c.free_operatingframe_test ??
-    raw.contact?.free_operatingframe_test ??
+    raw.FreeOperatingFrameTest ??
+    c.FreeOperatingFrameTest ??
     "";
 
   return {
-    // HubSpot built-ins
+    // Standard contact fields
     email,
     firstname,
     lastname,
     phone,
-    source,
 
-    // OperatingFrame custom properties (must exist in that HubSpot portal)
-    free_operatingframe_frequency,
-    free_operatingframe_test,
+    // Your custom fields in this HubSpot portal
+    Source,
+    FreeOperatingFrameFrequency,
+    FreeOperatingFrameTest,
   };
 }
 
@@ -118,7 +123,6 @@ function buildGhlContact(payload) {
       payload.lastname ||
       payload.contact?.last_name ||
       payload.contact?.lastname,
-    // tags can be array or comma-separated string
     tags: Array.isArray(payload.tags)
       ? payload.tags
       : payload.tags
@@ -130,10 +134,6 @@ function buildGhlContact(payload) {
   };
 }
 
-/**
- * Upsert contact to GHL (LeadConnector) with modern endpoint.
- * If locationId is provided, the contact will be created in that sub-account.
- */
 async function upsertToGhl(apiKey, contact, locationId) {
   const body = locationId ? { ...contact, locationId } : contact;
 
@@ -160,7 +160,6 @@ app.post("/webhook", async (req, res) => {
   }
 
   try {
-    // If you have a specific A location, set ACCOUNT_A_LOCATION_ID in .env and pass it here
     const resp = await upsertToGhl(
       process.env.ACCOUNT_A_API,
       contact,
@@ -189,7 +188,6 @@ app.post("/webhook2", async (req, res) => {
   }
 
   try {
-    // Prefer explicit location for B if you have it
     const resp = await upsertToGhl(
       process.env.ACCOUNT_B_API,
       contact,
@@ -252,7 +250,7 @@ app.get("/", (req, res) => {
   res.send("✅ Webhook server running.");
 });
 
-/* --------------- HubSpot single-contact UPSERT --------------- */
+/* --------------- HubSpot single-contact UPSERT (existing) --------------- */
 app.post("/webhook/ghl-to-hubspot", async (req, res) => {
   try {
     const properties = normalizeHubSpotContact(req.body || {});
@@ -271,14 +269,9 @@ app.post("/webhook/ghl-to-hubspot", async (req, res) => {
       timeout: 15000,
     });
 
-    // Search by email
     const searchBody = {
       filterGroups: [
-        {
-          filters: [
-            { propertyName: "email", operator: "EQ", value: properties.email },
-          ],
-        },
+        { filters: [{ propertyName: "email", operator: "EQ", value: properties.email }] },
       ],
       properties: Object.keys(properties),
       limit: 1,
@@ -289,15 +282,11 @@ app.post("/webhook/ghl-to-hubspot", async (req, res) => {
 
     if (existing) {
       const id = existing.id;
-      const update = await hs.patch(`/crm/v3/objects/contacts/${id}`, {
-        properties,
-      });
+      const update = await hs.patch(`/crm/v3/objects/contacts/${id}`, { properties });
       return res.status(200).json({ status: "updated", id, data: update.data });
     } else {
       const create = await hs.post("/crm/v3/objects/contacts", { properties });
-      return res
-        .status(200)
-        .json({ status: "created", id: create.data.id, data: create.data });
+      return res.status(200).json({ status: "created", id: create.data.id, data: create.data });
     }
   } catch (error) {
     const details = error.response?.data || error.message;
@@ -306,7 +295,7 @@ app.post("/webhook/ghl-to-hubspot", async (req, res) => {
   }
 });
 
-/* --------------- HubSpot batch UPSERT (by email) --------------- */
+/* --------------- HubSpot batch UPSERT (existing) --------------- */
 app.post("/webhook/ghl-to-hubspot-batch", async (req, res) => {
   try {
     const items = Array.isArray(req.body.contacts) ? req.body.contacts : [];
@@ -316,12 +305,8 @@ app.post("/webhook/ghl-to-hubspot-batch", async (req, res) => {
         .json({ status: "error", message: "Body must include contacts[]" });
     }
 
-    // Batch limit 100
     const chunk = (arr, size) =>
-      arr.reduce(
-        (a, _, i) => (i % size ? a : [...a, arr.slice(i, i + size)]),
-        []
-      );
+      arr.reduce((a, _, i) => (i % size ? a : [...a, arr.slice(i, i + size)]), []);
     const chunks = chunk(items, 100);
 
     const hs = axios.create({
@@ -339,9 +324,7 @@ app.post("/webhook/ghl-to-hubspot-batch", async (req, res) => {
         idProperty: "email",
         properties: normalizeHubSpotContact(c),
       }));
-      const resp = await hs.post("/crm/v3/objects/contacts/batch/upsert", {
-        inputs,
-      });
+      const resp = await hs.post("/crm/v3/objects/contacts/batch/upsert", { inputs });
       results.push(resp.data);
     }
 
@@ -353,9 +336,11 @@ app.post("/webhook/ghl-to-hubspot-batch", async (req, res) => {
   }
 });
 
-/* --------------- NEW: OperatingFrame HubSpot single-contact UPSERT --------------- */
+/* --------------- NEW: OperatingFrame HubSpot single UPSERT --------------- */
 app.post("/webhook/ghl-to-hubspot-operatingframe", async (req, res) => {
   try {
+    logToFile("hubspot-operatingframe-log.json", req.body);
+
     const token = process.env.HUBSPOT_ACCESS_TOKEN_OPERATINGFRAME;
     if (!token) {
       return res.status(500).json({
@@ -403,9 +388,11 @@ app.post("/webhook/ghl-to-hubspot-operatingframe", async (req, res) => {
   }
 });
 
-/* --------------- NEW: OperatingFrame HubSpot batch UPSERT (by email) --------------- */
+/* --------------- NEW: OperatingFrame HubSpot batch UPSERT (forgiving) --------------- */
 app.post("/webhook/ghl-to-hubspot-operatingframe-batch", async (req, res) => {
   try {
+    logToFile("hubspot-operatingframe-batch-log.json", req.body);
+
     const token = process.env.HUBSPOT_ACCESS_TOKEN_OPERATINGFRAME;
     if (!token) {
       return res.status(500).json({
@@ -414,19 +401,24 @@ app.post("/webhook/ghl-to-hubspot-operatingframe-batch", async (req, res) => {
       });
     }
 
-    const items = Array.isArray(req.body.contacts) ? req.body.contacts : [];
+    // ✅ Accept either:
+    // 1) { contacts: [...] }  (true batch)
+    // 2) { email: ... }      (single) -> we wrap it into contacts[0]
+    let items = [];
+    if (Array.isArray(req.body.contacts)) {
+      items = req.body.contacts;
+    } else if (req.body && (req.body.email || req.body.contact?.email)) {
+      items = [req.body];
+    }
+
     if (!items.length) {
       return res
         .status(400)
-        .json({ status: "error", message: "Body must include contacts[]" });
+        .json({ status: "error", message: "Body must include contacts[] (or a single contact payload)" });
     }
 
-    // Batch limit 100
     const chunk = (arr, size) =>
-      arr.reduce(
-        (a, _, i) => (i % size ? a : [...a, arr.slice(i, i + size)]),
-        []
-      );
+      arr.reduce((a, _, i) => (i % size ? a : [...a, arr.slice(i, i + size)]), []);
     const chunks = chunk(items, 100);
 
     const hs = axios.create({
@@ -441,6 +433,7 @@ app.post("/webhook/ghl-to-hubspot-operatingframe-batch", async (req, res) => {
         idProperty: "email",
         properties: normalizeHubSpotContactOperatingFrame(c),
       }));
+
       const resp = await hs.post("/crm/v3/objects/contacts/batch/upsert", { inputs });
       results.push(resp.data);
     }
@@ -508,7 +501,6 @@ app.post("/webhook/new-ghl-account", async (req, res) => {
     const data = err.response?.data;
     console.error("❌ Error sending to Account B:", status, data || err.message);
 
-    // surface the API error text for easier debugging
     return res.status(500).json({
       status: "error",
       httpStatus: status ?? null,
@@ -521,3 +513,4 @@ app.post("/webhook/new-ghl-account", async (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 Webhook server listening on port ${port}`);
 });
+
